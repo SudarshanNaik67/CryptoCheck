@@ -3,6 +3,8 @@ import hashlib
 import math
 import string
 from datetime import datetime
+import base64
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
@@ -13,6 +15,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+import signature_pad
 
 
 # =========================================================
@@ -397,6 +401,21 @@ def encrypt_file():
 
         return
 
+    confirm_password = simpledialog.askstring(
+        "Confirm Password",
+        "Re-enter the password to confirm:",
+        show="*"
+    )
+
+    if confirm_password != password:
+
+        messagebox.showwarning(
+            "Passwords Do Not Match",
+            "The passwords are different. Nothing was encrypted."
+        )
+
+        return
+
     try:
 
         # Read original file
@@ -438,6 +457,12 @@ def encrypt_file():
 
         # Output file
         output_file = selected_file + ".enc"
+
+        if os.path.exists(output_file) and not messagebox.askyesno(
+            "File Exists",
+            f"{os.path.basename(output_file)} already exists.\n\nOverwrite it?"
+        ):
+            return
 
         # File structure:
         # SALT + NONCE + ORIGINAL HASH + ENCRYPTED DATA
@@ -577,6 +602,12 @@ def decrypt_file():
         # Remove .enc
 
         output_file = selected_file[:-4]
+
+        if os.path.exists(output_file) and not messagebox.askyesno(
+            "File Exists",
+            f"{os.path.basename(output_file)} already exists.\n\nOverwrite it?"
+        ):
+            return
 
         with open(output_file, "wb") as file:
 
@@ -1031,7 +1062,7 @@ def show_digital_signature():
     )
 
     signature_window.geometry(
-        "760x560"
+        "760x680"
     )
 
     signature_window.configure(
@@ -1162,10 +1193,10 @@ def show_digital_signature():
     tk.Label(
         info,
         text=(
-            "1. Select a file from the main dashboard.\n"
-            "2. Generate a digital signature using Ed25519.\n"
-            "3. CryptoCheck creates a .sig signature file.\n"
-            "4. Verify the signature to detect file changes."
+            "A) Sign by Hand: sign with mouse or phone touch screen\n"
+            "    (+ optional fingerprint). Creates a .signed.json record.\n"
+            "B) Generate Signature: quick Ed25519 signature (.sig file).\n"
+            "Verify buttons detect any change to the file or record."
         ),
         bg=PANEL2,
         fg=MUTED,
@@ -1175,6 +1206,60 @@ def show_digital_signature():
         anchor="w",
         padx=18,
         pady=(0, 15)
+    )
+
+    # ---------------- HANDWRITTEN SIGNATURE ----------------
+
+    hand = tk.Frame(
+        signature_window,
+        bg=BG
+    )
+
+    hand.pack(
+        fill="x",
+        padx=25,
+        pady=(0, 8)
+    )
+
+    tk.Label(
+        signature_window,
+        text="HANDWRITTEN SIGNATURE (recommended for demo)",
+        bg=BG,
+        fg=MUTED,
+        font=("Segoe UI", 8, "bold")
+    ).pack(
+        anchor="w",
+        padx=25,
+        before=hand
+    )
+
+    tk.Button(
+        hand,
+        text="✍  Sign by Hand (Touch / Mouse + Fingerprint)",
+        command=show_handwritten_signature,
+        bg=ORANGE,
+        fg="black",
+        bd=0,
+        padx=22,
+        pady=12,
+        font=("Segoe UI", 10, "bold")
+    ).pack(
+        side="left",
+        padx=(0, 10)
+    )
+
+    tk.Button(
+        hand,
+        text="🔍  Verify Signed Record",
+        command=verify_handwritten_signature,
+        bg=GREEN,
+        fg="white",
+        bd=0,
+        padx=22,
+        pady=12,
+        font=("Segoe UI", 10, "bold")
+    ).pack(
+        side="left"
     )
 
     # ---------------- BUTTONS ----------------
@@ -1235,6 +1320,410 @@ def show_digital_signature():
 
 
 # =========================================================
+# HANDWRITTEN SIGNATURE (touch screen / mouse) + FINGERPRINT
+# =========================================================
+
+def _png_label(parent, png_bytes, max_width=420, bg="white"):
+    """Show PNG bytes in a Label (tkinter reads PNG natively)."""
+
+    image = tk.PhotoImage(
+        data=base64.b64encode(png_bytes).decode()
+    )
+
+    factor = max(1, image.width() // max_width)
+
+    if factor > 1:
+        image = image.subsample(factor, factor)
+
+    label = tk.Label(parent, image=image, bg=bg)
+    label.image = image          # keep a reference
+    return label
+
+
+def show_handwritten_signature():
+
+    if not selected_file:
+
+        messagebox.showwarning(
+            "No File Selected",
+            "Please select a file first."
+        )
+
+        return
+
+    target = selected_file
+
+    try:
+
+        private_key = create_signature_keys()
+        file_hash = sha256_file(target)
+
+    except Exception as error:
+
+        messagebox.showerror("Signature Error", str(error))
+        return
+
+    session = signature_pad.start_session(
+        target,
+        file_hash,
+        False
+    )
+
+    local_url = f"http://localhost:{signature_pad.PORT}/?t={session.token}"
+    lan_base = f"http://{signature_pad.get_lan_ip()}:{signature_pad.PORT}"
+
+    win = tk.Toplevel(root)
+    win.title("CryptoCheck - Sign with Touch / Mouse")
+    win.geometry("760x720")
+    win.configure(bg=BG)
+    win.transient(root)
+
+    top = tk.Frame(win, bg=HEADER, height=70)
+    top.pack(fill="x")
+    top.pack_propagate(False)
+
+    tk.Label(
+        top, text="✍  HANDWRITTEN SIGNATURE",
+        bg=HEADER, fg=TEXT, font=("Segoe UI", 19, "bold")
+    ).pack(side="left", padx=25)
+
+    tk.Label(
+        win,
+        text=f"File: {os.path.basename(target)}",
+        bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")
+    ).pack(anchor="w", padx=25, pady=(14, 0))
+
+    tk.Label(
+        win,
+        text="Sign on this laptop (mouse) or open the link on your phone (touch screen).",
+        bg=BG, fg=MUTED, font=("Segoe UI", 9)
+    ).pack(anchor="w", padx=25, pady=(2, 8))
+
+    # ---- laptop
+    tk.Button(
+        win, text="🖱  Sign on this laptop (opens browser)",
+        command=lambda: webbrowser.open(local_url),
+        bg=PURPLE, fg="white", bd=0, padx=20, pady=10,
+        font=("Segoe UI", 10, "bold")
+    ).pack(anchor="w", padx=25, pady=4)
+
+    # ---- phone link
+    link_panel = tk.Frame(
+        win, bg=PANEL, highlightthickness=1, highlightbackground=BORDER
+    )
+    link_panel.pack(fill="x", padx=25, pady=8)
+
+    tk.Label(
+        link_panel,
+        text="PHONE LINK  (phone and laptop on the same Wi-Fi)",
+        bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold")
+    ).pack(anchor="w", padx=14, pady=(12, 4))
+
+    link_var = tk.StringVar(value=f"{lan_base}/?t={session.token}")
+
+    link_entry = tk.Entry(
+        link_panel, textvariable=link_var, state="readonly",
+        readonlybackground=PANEL2, fg=TEXT, bd=0,
+        font=("Consolas", 10)
+    )
+    link_entry.pack(fill="x", padx=14, ipady=7)
+
+    qr_holder = tk.Label(link_panel, bg=PANEL)
+    qr_holder.pack(pady=4)
+
+    def refresh_qr():
+
+        try:
+
+            import qrcode
+            from PIL import ImageTk
+
+            img = qrcode.make(link_var.get()).resize((170, 170))
+            photo = ImageTk.PhotoImage(img)
+            qr_holder.configure(image=photo, text="")
+            qr_holder.image = photo
+
+        except Exception:
+
+            qr_holder.configure(
+                image="",
+                text="(optional)  pip install qrcode pillow  to show a QR code here",
+                fg="#4d6a87", font=("Segoe UI", 8)
+            )
+
+    refresh_qr()
+
+    def copy_link():
+        root.clipboard_clear()
+        root.clipboard_append(link_var.get())
+
+    tk.Button(
+        link_panel, text="Copy link", command=copy_link,
+        bg=BLUE, fg="white", bd=0, padx=16, pady=6,
+        font=("Segoe UI", 9, "bold")
+    ).pack(anchor="w", padx=14, pady=(0, 8))
+
+    # ---- fingerprint / https
+    tk.Label(
+        link_panel,
+        text="Fingerprint needs HTTPS. The secure tunnel starts "
+             "automatically (see status below). Advanced: paste your "
+             "own https:// address here:",
+        bg=PANEL, fg=MUTED, font=("Segoe UI", 8),
+        wraplength=640, justify="left"
+    ).pack(anchor="w", padx=14)
+
+    tunnel_row = tk.Frame(link_panel, bg=PANEL)
+    tunnel_row.pack(fill="x", padx=14, pady=(4, 12))
+
+    tunnel_var = tk.StringVar()
+
+    tk.Entry(
+        tunnel_row, textvariable=tunnel_var, bg=PANEL2, fg=TEXT,
+        insertbackground=TEXT, bd=0, font=("Consolas", 10)
+    ).pack(side="left", fill="x", expand=True, ipady=6)
+
+    def use_tunnel():
+
+        base = tunnel_var.get().strip().rstrip("/")
+
+        if not base.startswith("https://"):
+
+            messagebox.showwarning(
+                "HTTPS Address",
+                "Paste the https:// address printed by the tunnel.",
+                parent=win
+            )
+
+            return
+
+        link_var.set(f"{base}/?t={session.token}")
+        refresh_qr()
+
+    tk.Button(
+        tunnel_row, text="Use this address", command=use_tunnel,
+        bg=PURPLE, fg="white", bd=0, padx=14, pady=6,
+        font=("Segoe UI", 9, "bold")
+    ).pack(side="left", padx=(8, 0))
+
+    require_var = tk.BooleanVar(value=False)
+
+    def sync_require(*_):
+        session.require_biometric = require_var.get()
+
+    require_var.trace_add("write", sync_require)
+
+    tk.Checkbutton(
+        win,
+        text="Require fingerprint verification (phone sensor / Windows Hello)",
+        variable=require_var, bg=BG, fg=TEXT, selectcolor=PANEL2,
+        activebackground=BG, activeforeground=TEXT,
+        font=("Segoe UI", 10, "bold")
+    ).pack(anchor="w", padx=25, pady=4)
+
+    # ---- result area
+    status = tk.Label(
+        win, text="Waiting for signature…",
+        bg=BG, fg="#62b6ff", font=("Segoe UI", 10, "bold")
+    )
+    status.pack(anchor="w", padx=25, pady=(8, 4))
+
+    preview = tk.Frame(win, bg=BG)
+    preview.pack(fill="both", expand=True, padx=25)
+
+    tk.Button(
+        win, text="Close", command=win.destroy,
+        bg=BLUE, fg="white", bd=0, padx=25, pady=9,
+        font=("Segoe UI", 9, "bold")
+    ).pack(side="bottom", anchor="e", padx=25, pady=12)
+
+    # ---- automatic HTTPS tunnel (fingerprint)
+    tunnel_status = tk.Label(
+        link_panel, text="", bg=PANEL, fg="#62b6ff",
+        font=("Segoe UI", 9, "bold")
+    )
+    tunnel_status.pack(anchor="w", padx=14, pady=(0, 10))
+
+    tunnel_started = signature_pad.start_tunnel()
+
+    if tunnel_started:
+        tunnel_status.configure(text="⏳ Starting secure HTTPS tunnel… (10-20 sec)")
+    else:
+        tunnel_status.configure(
+            text="⚠ cloudflared.exe not found next to main.py - "
+                 "fingerprint will not work",
+            fg=ORANGE
+        )
+
+    applied = {"url": None}
+
+    def watch_tunnel():
+
+        if not win.winfo_exists():
+            return
+
+        url = signature_pad.tunnel_url
+
+        if url and applied["url"] != url:
+
+            applied["url"] = url
+            tunnel_var.set(url)
+            link_var.set(f"{url}/?t={session.token}")
+            refresh_qr()
+
+            tunnel_status.configure(
+                text="✓ HTTPS tunnel ready - open the link above on your phone",
+                fg=GREEN
+            )
+
+        win.after(1000, watch_tunnel)
+
+    if tunnel_started:
+        watch_tunnel()
+
+    def poll():
+
+        if not win.winfo_exists():
+            return
+
+        result = session.result
+
+        if result is None:
+            win.after(500, poll)
+            return
+
+        try:
+
+            record_path = signature_pad.save_signed_record(
+                target, file_hash, result, private_key
+            )
+
+        except Exception as error:
+
+            messagebox.showerror("Signature Error", str(error), parent=win)
+            return
+
+        fingerprint = (
+            "Fingerprint VERIFIED ✓"
+            if result["biometric_credential"]
+            else "No fingerprint used"
+        )
+
+        status.configure(
+            text=f"✓ Signed by {result['signer']}  |  {fingerprint}",
+            fg=GREEN
+        )
+
+        _png_label(preview, result["png"], 380).pack(pady=6)
+
+        operation_var.set("Handwritten signature added")
+
+        log_activity(
+            f"Handwritten signature added: {os.path.basename(target)} "
+            f"({fingerprint})"
+        )
+
+        messagebox.showinfo(
+            "Signature Added",
+            f"Signed by: {result['signer']}\n"
+            f"{fingerprint}\n\n"
+            f"Signed record:\n{record_path}\n\n"
+            "The record is protected with Ed25519 and bound to the "
+            "file's SHA-256 hash.",
+            parent=win
+        )
+
+    poll()
+
+
+def verify_handwritten_signature():
+
+    if not selected_file:
+
+        messagebox.showwarning(
+            "No File Selected",
+            "Select the ORIGINAL signed file (not the .json)."
+        )
+
+        return
+
+    _, public_key_path = get_key_paths()
+
+    try:
+
+        with open(public_key_path, "rb") as file:
+
+            public_key = serialization.load_pem_public_key(file.read())
+
+    except OSError:
+
+        messagebox.showerror(
+            "Public Key Missing",
+            "CryptoCheck public key was not found."
+        )
+
+        return
+
+    ok, message, record = signature_pad.verify_signed_record(
+        selected_file, public_key
+    )
+
+    log_activity(
+        f"Signed record {'VALID' if ok else 'INVALID'}: "
+        f"{os.path.basename(selected_file)}"
+    )
+
+    operation_var.set("Signed record VALID" if ok else "Signed record INVALID")
+
+    win = tk.Toplevel(root)
+    win.title("CryptoCheck - Signature Verification")
+    win.geometry("560x560")
+    win.configure(bg=BG)
+    win.transient(root)
+
+    tk.Label(
+        win,
+        text=("✓  SIGNATURE VALID" if ok else "✗  SIGNATURE INVALID"),
+        bg=BG, fg=(GREEN if ok else RED),
+        font=("Segoe UI", 20, "bold")
+    ).pack(pady=(22, 4))
+
+    tk.Label(
+        win, text=message, bg=BG, fg=MUTED,
+        font=("Segoe UI", 10), wraplength=500
+    ).pack(pady=(0, 10))
+
+    if record:
+
+        details = (
+            f"Signer: {record['signer']}\n"
+            f"Signed at (UTC): {record['signed_at_utc']}\n"
+            f"Fingerprint verified: "
+            f"{'YES' if record['fingerprint_verified'] else 'No'}\n"
+            f"File SHA-256: {record['file_sha256'][:32]}…"
+        )
+
+        tk.Label(
+            win, text=details, bg=PANEL2, fg=TEXT, justify="left",
+            font=("Consolas", 9), padx=14, pady=10
+        ).pack(fill="x", padx=25)
+
+        try:
+
+            png = base64.b64decode(record["handwritten_signature_png"])
+            _png_label(win, png, 360).pack(pady=12)
+
+        except Exception:
+            pass
+
+    tk.Button(
+        win, text="Close", command=win.destroy,
+        bg=BLUE, fg="white", bd=0, padx=25, pady=9,
+        font=("Segoe UI", 9, "bold")
+    ).pack(side="bottom", pady=14)
+
+
+# =========================================================
 # ABOUT
 # =========================================================
 
@@ -1261,17 +1750,22 @@ root.title(
 )
 
 root.geometry(
-    "1180x720"
+    "1240x800"
 )
 
 root.minsize(
-    1000,
-    650
+    1100,
+    760
 )
 
 root.configure(
     bg=BG
 )
+
+try:
+    root.state("zoomed")
+except tk.TclError:
+    pass
 
 
 # =========================================================
@@ -1390,7 +1884,7 @@ body.pack(
 sidebar = tk.Frame(
     body,
     bg=SIDEBAR,
-    width=205
+    width=250
 )
 
 sidebar.pack(
@@ -1445,27 +1939,56 @@ def navigation_button(
     return button
 
 
+def go_home():
+
+    for window in root.winfo_children():
+
+        if isinstance(window, tk.Toplevel):
+            window.destroy()
+
+    root.focus_force()
+
+
+def nav_encrypt():
+
+    if not selected_file:
+        select_file()
+
+    if selected_file:
+        encrypt_file()
+
+
+def nav_decrypt():
+
+    if not selected_file or not selected_file.lower().endswith(".enc"):
+        select_file()
+
+    if selected_file:
+        decrypt_file()
+
+
 navigation_button(
-    "⌂   Home"
+    "⌂   Home",
+    go_home
 )
 
 navigation_button(
     "🔒  File Encryption",
-    select_file
+    nav_encrypt
 )
 
 navigation_button(
     "🔓  File Decryption",
-    select_file
+    nav_decrypt
 )
 
 navigation_button(
-    "✓   Integrity Verification",
+    "✓   Verify Integrity",
     verify_integrity
 )
 
 navigation_button(
-    "🔑  Password Analysis",
+    "🔑  Password Check",
     analyze_password
 )
 
@@ -1473,6 +1996,11 @@ navigation_button(
 navigation_button(
     "✎   Digital Signature",
     show_digital_signature
+)
+
+navigation_button(
+    "✍   Sign by Hand",
+    show_handwritten_signature
 )
 
 # NOW WORKING
@@ -1508,7 +2036,7 @@ content.pack(
     fill="both",
     expand=True,
     padx=24,
-    pady=22
+    pady=12
 )
 
 
@@ -1519,7 +2047,7 @@ content.pack(
 hero = tk.Frame(
     content,
     bg="#102b55",
-    height=125,
+    height=92,
     highlightthickness=1,
     highlightbackground="#1a5ea8"
 )
@@ -1529,20 +2057,7 @@ hero.pack(
 )
 
 hero.pack_propagate(
-    False
-)
-
-
-tk.Label(
-    hero,
-    text="CRYPTOCHECK",
-    bg="#102b55",
-    fg=TEXT,
-    font=("Segoe UI", 28, "bold")
-).pack(
-    anchor="w",
-    padx=25,
-    pady=(20, 2)
+    True
 )
 
 
@@ -1554,11 +2069,12 @@ tk.Label(
     bg="#102b55",
     fg="#b6d1ed",
     font=("Segoe UI", 10),
-    wraplength=700,
+    wraplength=1100,
     justify="left"
 ).pack(
     anchor="w",
-    padx=26
+    padx=26,
+    pady=10
 )
 
 
@@ -1575,7 +2091,7 @@ file_card = tk.Frame(
 
 file_card.pack(
     fill="x",
-    pady=18
+    pady=10
 )
 
 
@@ -1647,6 +2163,18 @@ tk.Label(
 )
 
 
+tk.Label(
+    file_row,
+    textvariable=file_size_var,
+    bg=PANEL2,
+    fg=MUTED,
+    font=("Segoe UI", 9)
+).pack(
+    side="right",
+    padx=10
+)
+
+
 tk.Button(
     file_row,
     text="Browse",
@@ -1686,7 +2214,8 @@ def action_card(
     title,
     description,
     command,
-    accent
+    accent,
+    button_text="Open"
 ):
 
     frame = tk.Frame(
@@ -1703,16 +2232,40 @@ def action_card(
         padx=4
     )
 
-    tk.Label(
+    top_row = tk.Frame(
         frame,
+        bg=PANEL2
+    )
+
+    top_row.pack(
+        fill="x",
+        padx=12,
+        pady=(10, 2)
+    )
+
+    tk.Label(
+        top_row,
         text=title,
         bg=PANEL2,
         fg=TEXT,
-        font=("Segoe UI", 12, "bold")
+        font=("Segoe UI", 11, "bold")
     ).pack(
-        anchor="w",
+        side="left"
+    )
+
+    tk.Button(
+        top_row,
+        text=button_text,
+        command=command,
+        bg=accent,
+        fg="white",
+        bd=0,
         padx=14,
-        pady=(14, 4)
+        pady=4,
+        font=("Segoe UI", 9, "bold"),
+        cursor="hand2"
+    ).pack(
+        side="right"
     )
 
     tk.Label(
@@ -1721,27 +2274,12 @@ def action_card(
         bg=PANEL2,
         fg=MUTED,
         font=("Segoe UI", 8),
-        wraplength=190,
+        wraplength=260,
         justify="left"
     ).pack(
         anchor="w",
-        padx=14
-    )
-
-    tk.Button(
-        frame,
-        text="Open",
-        command=command,
-        bg=accent,
-        fg="white",
-        bd=0,
-        padx=18,
-        pady=7,
-        font=("Segoe UI", 9, "bold")
-    ).pack(
-        anchor="w",
         padx=14,
-        pady=14
+        pady=(0, 10)
     )
 
 
@@ -1750,7 +2288,8 @@ action_card(
     "🔒  Encrypt File",
     "Protect a file using password-based AES-GCM encryption.",
     encrypt_file,
-    GREEN
+    GREEN,
+    "Encrypt"
 )
 
 
@@ -1759,7 +2298,8 @@ action_card(
     "🔓  Decrypt File",
     "Recover the original file and verify its integrity.",
     decrypt_file,
-    BLUE
+    BLUE,
+    "Decrypt"
 )
 
 
@@ -1768,7 +2308,8 @@ action_card(
     "🛡  Verify Integrity",
     "Calculate the SHA-256 hash of the selected file.",
     verify_integrity,
-    PURPLE
+    PURPLE,
+    "Verify"
 )
 
 
@@ -1782,8 +2323,9 @@ bottom = tk.Frame(
 )
 
 bottom.pack(
-    fill="both",
-    expand=True
+    side="bottom",
+    fill="x",
+    before=hero
 )
 
 
@@ -1821,25 +2363,42 @@ security_items = [
     ("Encryption", "AES-GCM"),
     ("Integrity", "SHA-256"),
     ("Password Analysis", "Entropy based"),
-    ("Digital Signature", "Ed25519")
+    ("Digital Signature", "Ed25519"),
+    ("Handwritten Sign", "Touch + Fingerprint")
 ]
 
 
-for name, value in security_items:
+security_grid = tk.Frame(
+    security_panel,
+    bg=PANEL
+)
 
-    row = tk.Frame(
-        security_panel,
+security_grid.pack(
+    fill="x",
+    padx=18,
+    pady=(0, 10)
+)
+
+security_grid.grid_columnconfigure(0, weight=1)
+security_grid.grid_columnconfigure(1, weight=1)
+
+for index, (name, value) in enumerate(security_items):
+
+    cell = tk.Frame(
+        security_grid,
         bg=PANEL
     )
 
-    row.pack(
-        fill="x",
-        padx=18,
-        pady=5
+    cell.grid(
+        row=index // 2,
+        column=index % 2,
+        sticky="ew",
+        padx=(0, 16),
+        pady=2
     )
 
     tk.Label(
-        row,
+        cell,
         text="●  " + name,
         bg=PANEL,
         fg="#a9c5df",
@@ -1849,7 +2408,7 @@ for name, value in security_items:
     )
 
     tk.Label(
-        row,
+        cell,
         text=value,
         bg=PANEL,
         fg=GREEN,
@@ -1896,7 +2455,7 @@ activity_list = tk.Listbox(
     bd=0,
     highlightthickness=0,
     font=("Consolas", 9),
-    height=5
+    height=2
 )
 
 activity_list.pack(
